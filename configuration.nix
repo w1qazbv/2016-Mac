@@ -125,7 +125,7 @@
   };
 
   # Define your user account
-  users.users.yourusername = {
+  users.users.yourusername = { bv
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" "video" "audio" ];
     packages = with pkgs; [
