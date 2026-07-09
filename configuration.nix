@@ -1,137 +1,106 @@
-{ config, pkgs, ... }:
-
+{ config, pkgs, inputs, ... }:
 {
-  # =========================================================================
-  # 1. HARDWARE & KERNEL (Crucial for 2016 12" MacBook SPI Keyboard/Trackpad)
-  # =========================================================================
-  
-  boot.initrd.availableKernelModules = [ 
-    "xhci_pci" 
-    "nvme" 
-    "usbhid" 
-    "usb_storage" 
-    "sd_mod"
-    # Essential for the internal keyboard and trackpad (SPI bus)
-    "applespi" 
-    "intel_lpss_pci" 
-    "spi_pxa2xx_platform" 
+  imports = [
+    # This imports your automated hardware scan (DO NOT REMOVE)
+    ./hardware-configuration.nix
   ];
-  
-  boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ "kvm-intel" "applespi" ];
-  boot.extraModulePackages = [ ];
-
-  # Bootloader setup
+  # Bootloader settings
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
-
-  # =========================================================================
-  # 2. FIRMWARE, WI-FI, & BLUETOOTH (Broadcom Drivers)
-  # =========================================================================
-  
-  # Required for proprietary Broadcom wireless and bluetooth firmware blobs
-  hardware.enableRedistributableFirmware = true;
-  nixpkgs.config.allowUnfree = true;
-
-  # Networking via NetworkManager (plays beautifully with Wayland/Sway bar applets)
+  # Networking
+  networking.hostName = "nixos";
   networking.networkmanager.enable = true;
-  
-  # Bluetooth setup
-  hardware.bluetooth.enable = true;
-  hardware.bluetooth.powerOnOnBoot = true;
-  services.blueman.enable = true; # Bluetooth manager applet
+  # Time zone and locale
+  time.timeZone = "America/New_York"; # Change this to your timezone if needed
+  i18n.defaultLocale = "en_US.UTF-8";
+  # Define your user account
+  users.users.bv = {
+    isNormalUser = true;
+    description = "bv";
+    extraGroups = [ "networkmanager" "wheel" ]; # wheel grants sudo
+    packages = with pkgs; [
+      # Put any temporary packages you need here
+    ];
+  };
+  # Allow unfree packages (like proprietary drivers/software)
+  nixpkgs.config.allowUnfree = true;
+  # List packages installed in system profile
+  environment.systemPackages = with pkgs; [
+    nano
+    git
+    curl
+    firefox
+    alsa-utils# amixer, alsactl, aplay -- needed for the CS4208 amp unmute step
+    jellyfin-desktop
+    jellyfin-media-player
+    mpv
 
-  # =========================================================================
-  # 3. SOUND & AUDIO (PipeWire for Wayland)
-  # =========================================================================
-  
-  # Disable legacy ALSA/PulseAudio services
+  ];
+  # Enable the X11 windowing system (needed as a base layer for display managers)
+  services.xserver.enable = true;
+  # Setting up flake
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  # Enable the SDDM Display Manager (the login screen)
+  services.displayManager.sddm.enable = true;
+  services.displayManager.sddm.wayland.enable = true;
+  # Enable the KDE Plasma Desktop Environment
+  services.desktopManager.plasma6.enable = true;
+
+  ############################
+  # Audio: CS4208 codec fix + PipeWire + WirePlumber
+  ############################
+
+  # Patched snd-hda-codec-cs420x that actually enables the speaker amp on
+  # the 12" MacBook (MacBook9,1/10,1). Same module name as the in-tree one,
+  # so NixOS uses this build instead once it's in extraModulePackages.
+  # See ./pkgs/macbook-cs4208-audio-driver.nix for details + the hash you
+  # need to fill in on first build.
+  boot.extraModulePackages = [
+    (config.boot.kernelPackages.callPackage ./pkgs/macbook-cs4208-audio-driver.nix { })
+  ];
+
+  # Disable the old sound.enable / pulseaudio path so PipeWire owns audio
+  services.pulseaudio.enable = false;
+
+  # rtkit lets PipeWire ask for realtime scheduling priority
   security.rtkit.enable = true;
+
   services.pipewire = {
     enable = true;
     alsa.enable = true;
     alsa.support32Bit = true;
     pulse.enable = true;
+    # jack.enable = true; # uncomment if you need JACK app support
     wireplumber.enable = true;
   };
 
-  # =========================================================================
-  # 4. GRAPHICS & WAYLAND DEPS
-  # =========================================================================
-  
-  hardware.graphics = {
-    enable = true;
-    extraPackages = with pkgs; [
-      intel-media-driver
-      vaapiIntel
-    ];
-  };
+  # CS4208 on the 12" MacBook (MacBook9,1) has no usable hardware volume
+  # control on the internal speaker path -- the codec's only analog amp
+  # is wired to headphones. WirePlumber has to apply volume in software
+  # for this card, or the volume slider silently does nothing on speakers.
+  #
+  # This matches the audio controller at PCI 00:1f.3, which is where it
+  # lives on these MacBooks. If your card name differs, check with
+  # `wpctl status` or `pactl list cards short` and adjust device.name below.
+  environment.etc."wireplumber/wireplumber.conf.d/51-macbook-cs4208-softvol.conf".text = ''
+    monitor.alsa.rules = [
+      {
+        matches = [ { device.name = "alsa_card.pci-0000_00_1f.3" } ]
+        actions = { update-props = { api.alsa.soft-mixer = true } }
+      }
+    ]
+  '';
 
-  # =========================================================================
-  # 5. SWAY WINDOW MANAGER & ENVIRONMENT
-  # =========================================================================
-  
-  programs.sway = {
-    enable = true;
-    wrapperFeatures.gtk = true; # Ensures GTK applications scale properly
-    extraPackages = with pkgs; [
-      swaylock             # Screen locker
-      swayidle             # Idle management (sleep/screen blanking)
-      waybar               # Status bar
-      mako                 # Notification daemon
-      grim                 # Screenshot tool
-      slurp                # Region selector for screenshots
-      wl-clipboard         # Clipboard management
-      alacritty            # GPU-accelerated terminal emulator
-      dmenu                # Application launcher (or substitute with rofi-wayland)
-    ];
-  };
+  # This value determines the NixOS release from which your settings
+  # for stateful data, like file locations and database versions
+  # on your system were taken. It's perfectly fine and recommended to leave
+  # this at the release version you originally installed.
+  system.stateVersion = "26.05";
 
-  # Set Environment Variables for pure Wayland execution
-  environment.sessionVariables = {
-    NIXOS_OZONE_WL = "1"; # Forces Electron/Chromium apps to use Wayland natively
-    _JAVA_AWT_WM_NONREPARENTING = "1";
-  };
+  services.tailscale.enable = true;
 
-  # =========================================================================
-  # 6. SYSTEM TUNING (Retina Scaling & Power Management)
-  # =========================================================================
-  
-  # Console font size adjustment for the HiDPI Retina display during boot stage
-  console = {
-    earlySetup = true;
-    font = "ter-v32n";
-    packages = [ pkgs.terminus_font ];
-  };
+# Optional but recommended: open the firewall for tailscale's own port and interface
+networking.firewall.trustedInterfaces = [ "tailscale0" ];
+networking.firewall.checkReversePath = "loose"; # needed if you plan to use subnet routes/exit nodes
 
-  # Power Management (Crucial for fanless Intel Core m designs)
-  services.tlp = {
-    enable = true;
-    settings = {
-      CPU_SCALING_GOVERNOR_ON_AC = "performance";
-      CPU_SCALING_GOVERNOR_ON_BAT = "powersave";
-      CPU_ENERGY_PERF_POLICY_ON_BAT = "power";
-    };
-  };
-
-  # Touchpad tweaks for the MacBook trackpad
-  services.libinput = {
-    enable = true;
-    touchpad = {
-      tapping = true;
-      naturalScrolling = true;
-      clickMethod = "clickfinger";
-    };
-  };
-
-  # Define your user account
-  users.users.yourusername = { bv
-    isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" "video" "audio" ];
-    packages = with pkgs; [
-      firefox
-    ];
-  };
-
-  system.stateVersion = "24.11"; # Match your target NixOS channel version
 }
